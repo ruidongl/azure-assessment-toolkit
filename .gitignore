@@ -1,0 +1,21 @@
+# Generated output — contains subscription IDs, resource and resource group names
+reports/*
+temp/*
+archive/
+!reports/.gitkeep
+!temp/.gitkeep
+
+# Raw query captures
+*.json
+!tests/fixtures/*.json
+cm-query.json
+cm-region-query.json
+*.err
+
+# Editor / OS
+.vscode/
+.vs/
+*.swp
+*~
+Thumbs.db
+.DS_Store
