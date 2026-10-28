@@ -14,7 +14,8 @@ $res    = Read-Json "$OutDir/resources.json"
 $vaults = Read-Json "$OutDir/recovery-vaults.json"
 $sa     = Read-Json "$OutDir/storage-accounts.json"
 $vms    = Read-Json "$OutDir/vms.json"
-$ctx    = az account show -o json | ConvertFrom-Json
+$subFile = Join-Path $OutDir 'subscription.json'
+$ctx    = if (Test-Path $subFile) { Get-Content $subFile -Raw | ConvertFrom-Json } else { az account show -o json 2>$null | ConvertFrom-Json }
 
 $high = @($adv | Where-Object { $_.impact -eq 'High'   }).Count
 $med  = @($adv | Where-Object { $_.impact -eq 'Medium' }).Count

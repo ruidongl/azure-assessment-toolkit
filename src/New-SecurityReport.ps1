@@ -14,7 +14,8 @@ $score   = Read-Json "$OutDir/secure-score.json"
 $alerts  = Read-Json "$OutDir/security-alerts.json"
 $pricing = Read-Json "$OutDir/defender-pricing.json"
 $res     = Read-Json "$OutDir/resources.json"
-$ctx     = az account show -o json | ConvertFrom-Json
+$subFile = Join-Path $OutDir 'subscription.json'
+$ctx     = if (Test-Path $subFile) { Get-Content $subFile -Raw | ConvertFrom-Json } else { az account show -o json 2>$null | ConvertFrom-Json }
 
 $ascore = $score | Where-Object { $_.name -eq 'ascScore' }
 $pct = $null

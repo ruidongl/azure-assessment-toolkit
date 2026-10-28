@@ -8,6 +8,7 @@
 #>
 [CmdletBinding()]
 param(
+    [Alias('Subscription','s')]
     [string]$SubscriptionId,
     [string]$OutDir    = './temp',
     [string]$ReportDir = './reports',
@@ -42,23 +43,81 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-$ctx = az account show -o json 2>$null | ConvertFrom-Json
-if (-not $ctx) {
+$subs = @(az account list -o json 2>$null | ConvertFrom-Json)
+$ctx  = az account show -o json 2>$null | ConvertFrom-Json
+if (-not $ctx -and $subs.Count -eq 0) {
     Write-Host "Not signed in. Run: az login --use-device-code" -ForegroundColor Red
     exit 1
 }
 
-if ($SubscriptionId) {
-    az account set --subscription $SubscriptionId 2>$null
-    $ctx = az account show -o json 2>$null | ConvertFrom-Json
+# If -SubscriptionId was not passed, check if the user set a subscription in
+# Az PowerShell (Set-AzContext / Select-AzSubscription) or let them confirm
+# when multiple subscriptions exist.
+if (-not $SubscriptionId) {
+    $azPsSubId = $null
+    if (Get-Command Get-AzContext -ErrorAction SilentlyContinue) {
+        try {
+            $azPsCtx = Get-AzContext -ErrorAction SilentlyContinue
+            if ($azPsCtx -and $azPsCtx.Subscription -and $azPsCtx.Subscription.Id) {
+                $azPsSubId = [string]$azPsCtx.Subscription.Id
+            }
+        } catch {}
+    }
+
+    if ($azPsSubId -and (-not $ctx -or $ctx.id -ne $azPsSubId)) {
+        Write-Host "Detected subscription from Az PowerShell context: $($azPsCtx.Subscription.Name) ($azPsSubId)" -ForegroundColor Yellow
+        $SubscriptionId = $azPsSubId
+    } elseif ($subs.Count -gt 1 -and [Environment]::UserInteractive) {
+        $defaultSub = if ($ctx) { $ctx } else { $subs[0] }
+        Write-Host "Available subscriptions:" -ForegroundColor Cyan
+        for ($i = 0; $i -lt $subs.Count; $i++) {
+            $marker = if ($subs[$i].id -eq $defaultSub.id) { '*' } else { ' ' }
+            Write-Host ("  [{0}] {1} {2} ({3})" -f ($i + 1), $marker, $subs[$i].name, $subs[$i].id)
+        }
+        $choice = Read-Host "`nSelect subscription [1-$($subs.Count), ID, or name] (Enter for '$($defaultSub.name)')"
+        if ($choice -and $choice.Trim()) {
+            $trimmed = $choice.Trim()
+            $idx = 0
+            if ([int]::TryParse($trimmed, [ref]$idx) -and $idx -ge 1 -and $idx -le $subs.Count) {
+                $SubscriptionId = $subs[$idx - 1].id
+            } else {
+                $SubscriptionId = $trimmed
+            }
+        } else {
+            $SubscriptionId = $defaultSub.id
+        }
+        Write-Host ""
+    } elseif ($ctx) {
+        $SubscriptionId = $ctx.id
+    }
 }
+
+if ($SubscriptionId) {
+    # Clear any stale AZURE_SUBSCRIPTION_ID env var that would override az account set.
+    $env:AZURE_SUBSCRIPTION_ID = $null
+    az account set --subscription "$SubscriptionId" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Failed to set subscription '$SubscriptionId'. Available subscriptions:" -ForegroundColor Red
+        $subs | ForEach-Object { Write-Host "  $($_.name) ($($_.id))" -ForegroundColor Yellow }
+        exit 1
+    }
+    $ctx = az account show --subscription "$SubscriptionId" -o json 2>$null | ConvertFrom-Json
+}
+
+if (-not $ctx) {
+    Write-Host "Unable to resolve active Azure subscription." -ForegroundColor Red
+    exit 1
+}
+
+$SubscriptionId = [string]$ctx.id
+$env:AZURE_SUBSCRIPTION_ID = $SubscriptionId
 
 Write-Host "Subscription : $($ctx.name)" -ForegroundColor Green
 Write-Host "ID           : $($ctx.id)"
 Write-Host "Tenant       : $($ctx.tenantId)"
 Write-Host "User         : $($ctx.user.name)`n"
 
-& "$PSScriptRoot\Invoke-DataCollection.ps1" -OutDir $OutDir
+& "$PSScriptRoot\Invoke-DataCollection.ps1" -SubscriptionId $SubscriptionId -OutDir $OutDir
 
 Write-Host "Generating reports..." -ForegroundColor Cyan
 

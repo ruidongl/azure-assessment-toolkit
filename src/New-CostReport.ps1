@@ -17,7 +17,8 @@ $vms   = Read-Json "$OutDir/vms.json"
 $disks = Read-Json "$OutDir/disks.json"
 $pips  = Read-Json "$OutDir/public-ips.json"
 $plans = Read-Json "$OutDir/app-service-plans.json"
-$ctx   = az account show -o json 2>$null | ConvertFrom-Json
+$subFile = Join-Path $OutDir 'subscription.json'
+$ctx   = if (Test-Path $subFile) { Get-Content $subFile -Raw | ConvertFrom-Json } else { az account show -o json 2>$null | ConvertFrom-Json }
 
 function ConvertTo-CostNumber {
     param($Value)
