@@ -19,11 +19,25 @@ $pips  = Read-Json "$OutDir/public-ips.json"
 $plans = Read-Json "$OutDir/app-service-plans.json"
 $ctx   = az account show -o json 2>$null | ConvertFrom-Json
 
+function ConvertTo-CostNumber {
+    param($Value)
+    $number = 0.0
+    if ([double]::TryParse(
+        [string]$Value,
+        [Globalization.NumberStyles]::Any,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [ref]$number
+    )) {
+        return $number
+    }
+    return $null
+}
+
 $savings  = 0.0
 $currency = 'USD'
 foreach ($r in $adv) {
-    $v = $r.extendedProperties.annualSavingsAmount
-    if ($v) { $savings += [double]$v }
+    $v = ConvertTo-CostNumber $r.extendedProperties.annualSavingsAmount
+    if ($null -ne $v) { $savings += $v }
     if ($r.extendedProperties.savingsCurrency) { $currency = $r.extendedProperties.savingsCurrency }
 }
 
@@ -31,16 +45,21 @@ $high = @($adv | Where-Object { $_.impact -eq 'High'   }).Count
 $med  = @($adv | Where-Object { $_.impact -eq 'Medium' }).Count
 $low  = @($adv | Where-Object { $_.impact -eq 'Low'    }).Count
 
-$total30 = 0.0
+$total30        = 0.0
+$usageCostRows = 0
 foreach ($u in $usage) {
     $c = if ($null -ne $u.pretaxCost) { $u.pretaxCost } else { $u.cost }
-    if ($c) { $total30 += [double]$c }
+    $value = ConvertTo-CostNumber $c
+    if ($null -ne $value) {
+        $total30 += $value
+        $usageCostRows++
+    }
 }
 
 $orphanDisks  = @($disks | Where-Object { $_.diskState -eq 'Unattached' })
 $orphanDiskGB = ($orphanDisks | Measure-Object -Property diskSizeGb -Sum).Sum
 $orphanPips   = @($pips  | Where-Object { -not $_.ipConfiguration })
-$stoppedVms   = @($vms   | Where-Object { $_.powerState -and $_.powerState -ne 'VM running' })
+$stoppedVms   = @($vms   | Where-Object { $_.powerState -eq 'VM stopped' })
 $emptyPlans   = @($plans | Where-Object { $_.numberOfSites -eq 0 })
 
 $sb = [System.Text.StringBuilder]::new()
@@ -56,7 +75,7 @@ $sb = [System.Text.StringBuilder]::new()
 [void]$sb.AppendLine('')
 [void]$sb.AppendLine('| Metric | Value |')
 [void]$sb.AppendLine('|--------|-------|')
-if ($usage.Count -gt 0) {
+if ($usageCostRows -gt 0) {
     [void]$sb.AppendLine("| **Spend, last 30 days** | **$([math]::Round($total30,2)) $currency** |")
     [void]$sb.AppendLine("| Projected annual run rate | $([math]::Round($total30 * 12.17, 2)) $currency |")
 } else {
@@ -80,10 +99,13 @@ if ($usage.Count -gt 0) {
 if ($adv.Count -gt 0) {
     [void]$sb.AppendLine('| Annual Savings | Impact | Resource | Recommendation |')
     [void]$sb.AppendLine('|----------------|--------|----------|----------------|')
-    $adv | Sort-Object { -1 * [double]($_.extendedProperties.annualSavingsAmount) } |
+    $adv | Sort-Object {
+        $value = ConvertTo-CostNumber $_.extendedProperties.annualSavingsAmount
+        if ($null -eq $value) { 0 } else { -1 * $value }
+    } |
         Select-Object -First 40 | ForEach-Object {
-            $amt  = $_.extendedProperties.annualSavingsAmount
-            $disp = if ($amt) { "$([math]::Round([double]$amt,2)) $currency" } else { '-' }
+            $amt  = ConvertTo-CostNumber $_.extendedProperties.annualSavingsAmount
+            $disp = if ($null -ne $amt) { "$([math]::Round($amt,2)) $currency" } else { '-' }
             $name = ($_.resourceMetadata.resourceId -split '/')[-1]
             [void]$sb.AppendLine("| $disp | $($_.impact) | ``$name`` | $($_.shortDescription.problem) |")
         }
@@ -96,14 +118,15 @@ if ($adv.Count -gt 0) {
 
 [void]$sb.AppendLine('## Spend by Service (last 30 days)')
 [void]$sb.AppendLine('')
-if ($usage.Count -gt 0) {
+if ($usageCostRows -gt 0) {
     [void]$sb.AppendLine('| Service | Cost | Share |')
     [void]$sb.AppendLine('|---------|------|-------|')
     $usage | Group-Object { $_.meterDetails.meterCategory } | ForEach-Object {
         $c = 0.0
         foreach ($i in $_.Group) {
             $v = if ($null -ne $i.pretaxCost) { $i.pretaxCost } else { $i.cost }
-            if ($v) { $c += [double]$v }
+            $value = ConvertTo-CostNumber $v
+            if ($null -ne $value) { $c += $value }
         }
         [pscustomobject]@{ Service = $_.Name; Cost = $c }
     } | Sort-Object Cost -Descending | Select-Object -First 20 | ForEach-Object {
