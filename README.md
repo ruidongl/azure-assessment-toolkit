@@ -139,11 +139,22 @@ Should list nothing from `reports/` or `temp/`.
 | `Please run 'az login'` | Token expired | Re-authenticate |
 | `running scripts is disabled` | Execution policy | `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force` |
 | `NativeCommandError` about stderr | `$ErrorActionPreference` is `Stop` | Open a fresh terminal; the scripts set `Continue` themselves |
+| `The process cannot access the file ... because it is being used by another process` at `cmd /c` | A redirected file is locked; older collectors reuse error-file names | Update the scripts (the collector now uses unique temporary files). Avoid simultaneous assessments using the same output folders |
+| `consumption-usage FAILED` | Cost API rejected the query, or the response was invalid | Read the error printed below `FAILED`; check billing access, subscription support, and any throttling message |
 | `consumption-usage  SKIPPED` | No billing role | Expected on `Reader` only |
 | `reservations  SKIPPED` | Reservations live at billing-account scope | Harmless |
 | Report shows `_No ... returned._` | Plan disabled or genuinely no data | `az security pricing list -o table` |
 
 The Azure CLI writes benign warnings to stderr on several `az security` commands. The collector diverts stderr to a temp file so JSON stays clean, and reports these as `OK (warning ignored)`.
+
+An extension preview-install warning alone does not establish why a command failed.
+The current subscription collector uses `az rest` for disks and cost queries, so
+these queries do not need the Resource Graph extension. Do not enable preview
+extensions just to suppress that warning.
+
+Reports are still generated when individual queries fail, so `Complete` does not
+mean all data was collected. Review every `FAILED` entry before sharing reports;
+empty sections can reflect a collection failure rather than a clean assessment.
 
 ---
 

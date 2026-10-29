@@ -8,6 +8,40 @@ param(
 # Do not change to 'Stop'. az writes warnings to stderr on several commands.
 $ErrorActionPreference = 'Continue'
 
+function Invoke-CollectionCommand {
+    param([string]$Command)
+
+    $errFile = Join-Path $env:TEMP ("azcollect-{0}.err" -f ([guid]::NewGuid().ToString('N')))
+    try {
+        # Disable stdin prompts and keep CLI warnings out of the JSON output.
+        $cmdLine = '{0} < nul 2>"{1}"' -f $Command, $errFile
+        $output = cmd /d /c $cmdLine
+        $exitCode = $LASTEXITCODE
+        $warning = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { '' }
+        [pscustomobject]@{
+            Output  = $output
+            Exit    = $exitCode
+            Warning = $warning
+        }
+    } finally {
+        if (Test-Path $errFile) {
+            Remove-Item $errFile -Force
+        }
+    }
+}
+
+function Write-CollectionFailure {
+    param([string]$Detail)
+
+    Write-Host "FAILED" -ForegroundColor Yellow
+    if ([string]::IsNullOrWhiteSpace($Detail)) {
+        $Detail = 'No error details were returned by Azure CLI.'
+    }
+    $Detail.Trim() -split "`n" | ForEach-Object {
+        Write-Host "    $_" -ForegroundColor DarkYellow
+    }
+}
+
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 
 if ($SubscriptionId) {
@@ -50,29 +84,15 @@ $queries = [ordered]@{
 Write-Host "Collecting data..." -ForegroundColor Cyan
 
 foreach ($name in $queries.Keys) {
-    $path    = Join-Path $OutDir "$name.json"
-    $errFile = Join-Path $env:TEMP "azcollect-$name.err"
+    $path = Join-Path $OutDir "$name.json"
     Write-Host ("  {0,-22}" -f $name) -NoNewline
 
-    # cmd /c with '< nul' prevents any CLI prompt (e.g. extension install) from hanging on stdin,
-    # and keeps stderr out of captured stdout so the JSON stays clean.
-    $cmdLine = '{0} < nul 2>"{1}"' -f $queries[$name], $errFile
-    $result  = cmd /c $cmdLine
-    $exit    = $LASTEXITCODE
+    $commandResult = Invoke-CollectionCommand -Command $queries[$name]
+    $result = $commandResult.Output
+    $warn = $commandResult.Warning
 
-    $warn = ''
-    if (Test-Path $errFile) {
-        $warn = (Get-Content $errFile -Raw)
-        Remove-Item $errFile -Force -ErrorAction SilentlyContinue
-    }
-
-    if ($exit -ne 0) {
-        Write-Host "FAILED" -ForegroundColor Yellow
-        if ($warn) {
-            $warn.Trim() -split "`n" | ForEach-Object {
-                Write-Host "    $_" -ForegroundColor DarkYellow
-            }
-        }
+    if ($commandResult.Exit -ne 0) {
+        Write-CollectionFailure -Detail $warn
         '[]' | Set-Content -Path $path -Encoding utf8
         continue
     }
@@ -101,16 +121,16 @@ $diskUri   = "https://management.azure.com/subscriptions/$SubscriptionId/provide
 $diskQuery = "{value:value[].{name:name,location:location,diskState:properties.diskState,diskSizeGb:properties.diskSizeGB,sku:{name:sku.name}},nextLink:nextLink}"
 $allDisks  = [System.Collections.Generic.List[object]]::new()
 $diskOk    = $true
+$diskError = ''
 
 while ($diskUri) {
-    $errFile = Join-Path $env:TEMP ("azcollect-disks-{0}.err" -f ([guid]::NewGuid().ToString('N')))
-    $cmdLine = 'az rest --method get --uri "{0}" --query "{1}" -o json < nul 2>"{2}"' -f $diskUri, $diskQuery, $errFile
-    $pageRaw = cmd /c $cmdLine
-    $exit    = $LASTEXITCODE
-    Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+    $command = 'az rest --method get --uri "{0}" --query "{1}" -o json' -f $diskUri, $diskQuery
+    $commandResult = Invoke-CollectionCommand -Command $command
+    $pageRaw = $commandResult.Output
 
-    if ($exit -ne 0 -or -not $pageRaw) {
+    if ($commandResult.Exit -ne 0 -or -not $pageRaw) {
         $diskOk = $false
+        $diskError = $commandResult.Warning
         break
     }
 
@@ -124,6 +144,7 @@ while ($diskUri) {
         $diskUri = $page.nextLink
     } catch {
         $diskOk = $false
+        $diskError = "Invalid disk response: $($_.Exception.Message)"
         break
     }
 }
@@ -138,7 +159,7 @@ if ($diskOk) {
     }
 } else {
     '[]' | Set-Content -Path $disksPath -Encoding utf8
-    Write-Host "FAILED" -ForegroundColor Yellow
+    Write-CollectionFailure -Detail $diskError
 }
 
 Write-Host ("  {0,-22}" -f 'consumption-usage') -NoNewline
@@ -160,10 +181,17 @@ $costBody | ConvertTo-Json -Depth 8 | Set-Content -Path $bodyPath -Encoding utf8
 
 try {
     $uri = "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.CostManagement/query?api-version=2023-03-01"
-    $response = az rest --method post --uri $uri --headers 'Content-Type=application/json' `
-        --body "@$bodyPath" -o json 2>$null | ConvertFrom-Json
+    $command = 'az rest --method post --uri "{0}" --headers "Content-Type=application/json" --body "@{1}" -o json' -f $uri, $bodyPath
+    $commandResult = Invoke-CollectionCommand -Command $command
+    if ($commandResult.Exit -ne 0) {
+        throw "Cost query failed (exit $($commandResult.Exit)): $($commandResult.Warning)"
+    }
+    $response = $commandResult.Output | ConvertFrom-Json -ErrorAction Stop
+    if (-not $response -or -not $response.properties -or $null -eq $response.properties.rows) {
+        throw 'Cost query returned no rows property. Check the Azure CLI response.'
+    }
 
-    if ($LASTEXITCODE -eq 0 -and $response.properties.rows) {
+    if ($response.properties.rows.Count -gt 0) {
         $normalized = foreach ($row in $response.properties.rows) {
             [pscustomobject]@{
                 pretaxCost  = $row[0]
@@ -176,8 +204,11 @@ try {
         Write-Host "OK" -ForegroundColor Green
     } else {
         '[]' | Set-Content -Path (Join-Path $OutDir 'consumption-usage.json') -Encoding utf8
-        Write-Host "FAILED" -ForegroundColor Yellow
+        Write-Host "empty" -ForegroundColor DarkGray
     }
+} catch {
+    '[]' | Set-Content -Path (Join-Path $OutDir 'consumption-usage.json') -Encoding utf8
+    Write-CollectionFailure -Detail $_.Exception.Message
 } finally {
     Remove-Item $bodyPath -Force -ErrorAction SilentlyContinue
 }
