@@ -10,6 +10,8 @@
 param(
     [Alias('Subscription','s')]
     [string]$SubscriptionId,
+    [Alias('g','rg')]
+    [string[]]$ResourceGroup,
     [string]$OutDir    = './temp',
     [string]$ReportDir = './reports',
     [ValidateSet('Security','Resiliency','Cost')]
@@ -116,6 +118,16 @@ Write-Host "Subscription : $($ctx.name)" -ForegroundColor Green
 Write-Host "ID           : $($ctx.id)"
 Write-Host "Tenant       : $($ctx.tenantId)"
 Write-Host "User         : $($ctx.user.name)`n"
+
+if ($ResourceGroup -and $ResourceGroup.Count -gt 0) {
+    $rgScript = Join-Path $PSScriptRoot 'rg\Invoke-RGAssessment.ps1'
+    if (-not (Test-Path $rgScript)) {
+        Write-Host "Missing resource-group assessment script: $rgScript" -ForegroundColor Red
+        exit 1
+    }
+    & $rgScript -SubscriptionId $SubscriptionId -ResourceGroup $ResourceGroup -OutDir $OutDir -ReportDir $ReportDir -Skip $Skip
+    exit $LASTEXITCODE
+}
 
 & "$PSScriptRoot\Invoke-DataCollection.ps1" -SubscriptionId $SubscriptionId -OutDir $OutDir
 

@@ -58,12 +58,31 @@ az consumption usage list --top 3 -o table
 
 ## Usage
 
-### Full assessment
+### Full assessment (subscription-wide)
 
 ```powershell
 .\src\Invoke-Assessment.ps1
 .\src\Invoke-Assessment.ps1 -SubscriptionId "00000000-0000-0000-0000-000000000000"
 ```
+
+### Resource-group assessment (for teams that only own specific resource groups)
+
+You can pass `-ResourceGroup` to the main script or use the dedicated script set under `./src/rg/`:
+
+```powershell
+# Using the dedicated resource-group scripts (prompts for RGs if omitted)
+.\src\rg\Invoke-RGAssessment.ps1
+.\src\rg\Invoke-RGAssessment.ps1 -ResourceGroup "rg-bot-prod","rg-bot-shared"
+.\src\rg\Invoke-RGAssessment.ps1 -SubscriptionId "00000000-0000-0000-0000-000000000000" -ResourceGroup "rg-bot-prod"
+
+# Or via the main entry point
+.\src\Invoke-Assessment.ps1 -ResourceGroup "rg-bot-prod","rg-bot-shared"
+
+# List accessible resource groups in the subscription
+.\src\rg\Invoke-RGAssessment.ps1 -ListResourceGroups
+```
+
+Reports are written to `./reports/` as `SecurityAssessment_<scope>_YYYYMMDD.md`, `ResiliencyAssessment_<scope>_YYYYMMDD.md`, and `CostOptimization_<scope>_YYYYMMDD.md`.
 
 ### Skip pillars
 
